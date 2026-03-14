@@ -1,6 +1,6 @@
 # CLAUDE.md — Brain Chart
 
-3D interactive knowledge graph visualization for the 2brain ecosystem. Full-stack app: React frontend with Three.js, Hono backend, reading from 2brain's PostgreSQL database.
+Interactive knowledge graph visualization for the 2brain ecosystem. Full-stack app: React frontend with vis-network, Hono backend, reading from Memory System 2's Neo4j AuraDB.
 
 ## Quick start
 
@@ -15,9 +15,9 @@ npm start            # Production: serves built client from Hono
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 19, TypeScript, react-force-graph-3d, Three.js |
+| Frontend | React 19, TypeScript, vis-network |
 | Backend | Hono, @hono/node-server |
-| Database | PostgreSQL (192.168.1.58:5432, database `memory`) |
+| Database | Neo4j AuraDB (Memory System 2 knowledge graph) |
 | Build | Vite (client → dist-client/), tsc (server → dist-server/) |
 | Module | ES2022, ESM-only |
 
@@ -26,54 +26,56 @@ npm start            # Production: serves built client from Hono
 ```
 src/
   App.tsx          Main component — state, data fetching, layout
-  Graph3D.tsx      3D force-directed graph (react-force-graph-3d)
+  renderers/
+    VisNetworkGraph.tsx  vis-network graph renderer
   Sidebar.tsx      Entity detail panel (click a node)
   theme.ts         Entity type → color mapping
   types.ts         TypeScript interfaces
 
 server/
   index.ts         Hono API server (port 3200), serves static files in prod
-  db.ts            PG pool + query functions
+  db.ts            Neo4j driver + Cypher query functions
 ```
 
 **API endpoints:**
 - `GET /api/graph` — all entities + relationships for visualization
-- `GET /api/stats` — entity/relationship/event counts
-- `GET /api/entity/:id` — entity details with connected entities and events
+- `GET /api/stats` — entity/relationship counts
+- `GET /api/entity/:id` — entity details with connected entities
 
-**Data flow:** Frontend fetches `/api/graph` → renders 3D force graph → click node → fetch `/api/entity/:id` → show in sidebar.
+**Data flow:** Frontend fetches `/api/graph` → renders force-directed graph → click node → fetch `/api/entity/:id` → show connections in sidebar.
 
-## Database tables used
+## Neo4j schema (Memory System 2)
 
-- `entities` (id, name, entity_type, properties, created_at)
-- `relationships` (source_entity_id, target_entity_id, relation_type, valid_until)
-- `brain_events` (id, title, summary, importance, content, valid_until)
+- `(:Entity {id, name, type, updatedAt})` — knowledge graph nodes
+- `(:Entity)-[:RELATES {type, status, t_created, t_valid}]->(:Entity)` — directed edges
+- Only `status: 'Active'` relationships are shown
 
-These are shared 2brain tables — read-only from this app.
+Entity IDs are 16-char SHA256 hex strings (e.g. `bf97c43a1025fccd`).
+
+## Config
+
+Neo4j credentials via environment variables:
+- `NEO4J_URI` — bolt+s:// connection URI
+- `NEO4J_USER` — username
+- `NEO4J_PASSWORD` — password
+- `NEO4J_DATABASE` — database name (AuraDB Free: instance username, not `neo4j`)
+
+Credentials stored in Vault: `vault kv get secret/2brain/neo4j`
 
 ## Development
 
 - Dev mode: Vite on :5173 proxies `/api/*` to `http://localhost:3200`
-- Node sizes scale by event count; colors by entity type (see `theme.ts`)
-- DB credentials currently hardcoded in `server/db.ts`
+- Node sizes scale by connection degree; colors by entity type (see `theme.ts`)
+- Legend panel: click entity types to filter; search bar for node lookup
 
 ## Deploy
 
-Systemd service `brain-chart.service` included in repo:
+Systemd service `brain-chart.service` with Neo4j env vars drop-in:
 ```bash
 npm run build
 sudo systemctl restart brain-chart
 ```
 
+Drop-in: `/etc/systemd/system/brain-chart.service.d/neo4j.conf`
+
 Accessible at `https://brain.voytek-homelab.com` via Traefik (LXC 505, port 3200).
-
-## Key files
-
-| File | Purpose |
-|------|---------|
-| src/App.tsx | Main component, state management, data fetching |
-| src/Graph3D.tsx | 3D visualization logic |
-| server/index.ts | API server, static file serving |
-| server/db.ts | PostgreSQL queries |
-| brain-chart.service | Systemd unit file |
-| vite.config.ts | Build config, dev proxy |
