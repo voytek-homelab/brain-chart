@@ -1,0 +1,15 @@
+[Unit]
+Description=Brain Chart v2 - Knowledge Graph Visualization
+After=network.target
+
+[Service]
+Type=simple
+User=voytek
+WorkingDirectory=/home/voytek/repos/2brain/projects/brain-chart-v2
+ExecStart=/usr/bin/node dist-server/index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
