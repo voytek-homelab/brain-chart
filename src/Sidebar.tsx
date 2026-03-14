@@ -1,4 +1,4 @@
-import { EntityDetail, ConnectedEntity } from './types';
+import { EntityDetail, ConnectedEntity, MemoryItem } from './types';
 import { nodeColor, typeBadgeStyle } from './theme';
 
 interface Props {
@@ -46,6 +46,28 @@ export function Sidebar({ entity, loading, onClose, onNavigate }: Props) {
               ))}
             </Section>
           )}
+
+          {entity.memories.length > 0 && (
+            <Section title={`Memories (${entity.memories.length})`}>
+              {entity.memories.map((m: MemoryItem) => (
+                <div key={m.id} style={memoryItemStyle}>
+                  <div style={{ fontSize: 13, color: '#ddd' }}>
+                    {m.title || m.content.slice(0, 80)}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                    {m.event_type} &middot; importance {m.importance}
+                    {m.source && <> &middot; {m.source}</>}
+                    {' '}&middot; {new Date(m.captured_at).toLocaleDateString()}
+                  </div>
+                  {m.title && (
+                    <div style={{ fontSize: 11, color: '#777', marginTop: 4 }}>
+                      {m.content}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </Section>
+          )}
         </>
       )}
     </div>
@@ -85,4 +107,9 @@ const connectedItemStyle: React.CSSProperties = {
   borderBottom: '1px solid #222',
   cursor: 'pointer',
   fontSize: 13,
+};
+
+const memoryItemStyle: React.CSSProperties = {
+  padding: '8px 0',
+  borderBottom: '1px solid #222',
 };

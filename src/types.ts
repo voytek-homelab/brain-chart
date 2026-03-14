@@ -25,6 +25,17 @@ export interface EntityDetail {
   entity_type: string;
   description?: string;
   connected: ConnectedEntity[];
+  memories: MemoryItem[];
+}
+
+export interface MemoryItem {
+  id: string;
+  title?: string;
+  content: string;
+  importance: number;
+  event_type: string;
+  source: string;
+  captured_at: string;
 }
 
 export interface ConnectedEntity {
@@ -38,4 +49,5 @@ export interface ConnectedEntity {
 export interface Stats {
   entities: number;
   relationships: number;
+  memories: number;
 }
