@@ -5,6 +5,8 @@ export interface GraphNode {
   description?: string;
   eventCount: number;
   val: number;
+  rank?: number;
+  communityId?: string;
 }
 
 export interface GraphLink {

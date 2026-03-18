@@ -1,5 +1,5 @@
 import neo4j, { type Driver } from 'neo4j-driver';
-import { Pinecone } from '@pinecone-database/pinecone';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import { GoogleGenAI } from '@google/genai';
 
 // === Neo4j ===
@@ -19,10 +19,10 @@ function session() {
   return driver.session({ database });
 }
 
-// === Pinecone ===
+// === Qdrant ===
 
-const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY ?? '' });
-const pineconeIndex = pinecone.index(process.env.PINECONE_INDEX_NAME ?? 'memory2');
+const qdrant = new QdrantClient({ url: process.env.QDRANT_URL ?? 'http://192.168.1.58:6333' });
+const qdrantCollection = process.env.QDRANT_COLLECTION ?? 'memory2';
 
 // === Gemini (embeddings only) ===
 
@@ -42,8 +42,9 @@ async function embedText(text: string): Promise<number[]> {
 export async function getGraphData() {
   const s1 = session();
   const s2 = session();
+  const s3 = session();
   try {
-    const [nodeResult, edgeResult] = await Promise.all([
+    const [nodeResult, edgeResult, enrichResult] = await Promise.all([
       s1.executeRead(tx =>
         tx.run(
           `MATCH (e:Entity)
@@ -59,16 +60,39 @@ export async function getGraphData() {
            RETURN s.id AS source, t.id AS target, r.type AS relationType`,
         ),
       ),
+      s3.executeRead(tx =>
+        tx.run(`
+          CALL pagerank.get() YIELD node, rank
+          WITH node, rank WHERE node:Entity
+          OPTIONAL MATCH (node)-[:BELONGS_TO]->(c:Community)
+          RETURN node.id AS id, rank, c.id AS communityId
+        `),
+      ).catch(() => ({ records: [] })),
     ]);
+
+    // Build enrichment map from MAGE PageRank + community data
+    const enrichMap = new Map<string, { rank: number; communityId?: string }>();
+    for (const r of enrichResult.records) {
+      enrichMap.set(r.get('id') as string, {
+        rank: r.get('rank') as number,
+        communityId: r.get('communityId') as string | undefined,
+      });
+    }
 
     const nodes = nodeResult.records.map(r => {
       const degree = r.get('degree') as number;
+      const id = r.get('id') as string;
+      const enrichment = enrichMap.get(id);
       return {
-        id: r.get('id') as string,
+        id,
         name: r.get('name') as string,
         entityType: r.get('entityType') as string,
         eventCount: degree,
-        val: Math.min(16, Math.max(2, 4 + degree)),
+        val: enrichment
+          ? Math.min(16, Math.max(2, 2 + enrichment.rank * 200))
+          : Math.min(16, Math.max(2, 4 + degree)),
+        ...(enrichment?.rank != null && { rank: enrichment.rank }),
+        ...(enrichment?.communityId != null && { communityId: enrichment.communityId }),
       };
     });
 
@@ -81,7 +105,7 @@ export async function getGraphData() {
 
     return { nodes, links };
   } finally {
-    await Promise.all([s1.close(), s2.close()]);
+    await Promise.all([s1.close(), s2.close(), s3.close()]);
   }
 }
 
@@ -106,29 +130,30 @@ export async function getEntityDetail(id: string) {
       ),
     );
 
-    // Search Pinecone for memories mentioning this entity
+    // Search Qdrant for memories mentioning this entity
     let memories: Array<{ id: string; title?: string; content: string; importance: number; event_type: string; source: string; captured_at: string }> = [];
     try {
       const embedding = await embedText(entityName);
-      const results = await pineconeIndex.query({
-        vector: embedding,
-        topK: 10,
-        includeMetadata: true,
+      const results = await qdrant.query(qdrantCollection, {
+        prefetch: [{ query: embedding, using: 'dense', limit: 10 }],
+        query: { fusion: 'rrf' },
+        limit: 10,
+        with_payload: true,
       });
 
-      memories = (results.matches || [])
-        .filter(m => (m.score ?? 0) >= 0.3)
-        .map(m => ({
-          id: m.id,
-          title: m.metadata?.['title'] ? String(m.metadata['title']) : undefined,
-          content: String(m.metadata?.['content'] ?? '').slice(0, 200),
-          importance: Number(m.metadata?.['importance'] ?? 5),
-          event_type: String(m.metadata?.['event_type'] ?? 'note'),
-          source: String(m.metadata?.['source'] ?? ''),
-          captured_at: new Date(Number(m.metadata?.['captured_at'] ?? 0) * 1000).toISOString(),
+      memories = (results.points || [])
+        .filter(p => (p.score ?? 0) >= 0.3)
+        .map(p => ({
+          id: typeof p.id === 'string' ? p.id : String(p.id),
+          title: p.payload?.['title'] ? String(p.payload['title']) : undefined,
+          content: String(p.payload?.['content'] ?? '').slice(0, 200),
+          importance: Number(p.payload?.['importance'] ?? 5),
+          event_type: String(p.payload?.['event_type'] ?? 'note'),
+          source: String(p.payload?.['source'] ?? ''),
+          captured_at: new Date(Number(p.payload?.['captured_at'] ?? 0) * 1000).toISOString(),
         }));
     } catch (err) {
-      console.warn('Pinecone search failed:', (err as Error).message);
+      console.warn('Qdrant search failed:', (err as Error).message);
     }
 
     return {
@@ -152,7 +177,7 @@ export async function getEntityDetail(id: string) {
 export async function getStats() {
   const s = session();
   try {
-    const [graphResult, pineconeStats] = await Promise.all([
+    const [graphResult, qdrantStats] = await Promise.all([
       s.executeRead(async tx => {
         const r = await tx.run(
           `MATCH (n:Entity)
@@ -165,12 +190,12 @@ export async function getStats() {
           relationships: r.records[0]?.get('relationships') ?? 0,
         };
       }),
-      pineconeIndex.describeIndexStats().catch(() => null),
+      qdrant.getCollection(qdrantCollection).catch(() => null),
     ]);
 
     return {
       ...graphResult,
-      memories: pineconeStats?.totalRecordCount ?? 0,
+      memories: qdrantStats?.points_count ?? 0,
     };
   } finally {
     await s.close();
